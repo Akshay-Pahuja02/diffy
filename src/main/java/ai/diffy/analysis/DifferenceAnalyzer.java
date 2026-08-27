@@ -1,6 +1,8 @@
 package ai.diffy.analysis;
 
+import ai.diffy.Settings;
 import ai.diffy.compare.Difference;
+import ai.diffy.compare.ListComparisonMode;
 import ai.diffy.compare.NoDifference;
 import ai.diffy.compare.PrimitiveDifference;
 import ai.diffy.flat.FlatEntry;
@@ -27,14 +29,17 @@ public class DifferenceAnalyzer {
     private final RawDifferenceCounter rawCounter;
     private final NoiseDifferenceCounter noiseCounter;
     private final InMemoryDifferenceCollector store;
+    private final Settings settings;
 
     public DifferenceAnalyzer(
             RawDifferenceCounter rawCounter,
             NoiseDifferenceCounter noiseCounter,
-            InMemoryDifferenceCollector store) {
+            InMemoryDifferenceCollector store,
+            Settings settings) {
         this.rawCounter   = rawCounter;
         this.noiseCounter = noiseCounter;
         this.store        = store;
+        this.settings     = settings;
     }
 
     public Optional<DifferenceResult> analyze(AnalysisRequest analysisRequest) {
@@ -77,35 +82,48 @@ public class DifferenceAnalyzer {
                 new NoDifference<>(fe.value()));
         }
 
+        ListComparisonMode mode = settings.listComparisonMode();
+
         // Raw diff: request fields + response diff (primary vs candidate)
         Map<String, Difference> rawDiff = new LinkedHashMap<>(requestDiff);
-        Difference.apply(primary.result(), candidate.result())
+        Difference.apply(primary.result(), candidate.result(), mode)
             .flattened().forEach((k, v) -> rawDiff.put("response." + k, v));
 
         // Noise diff: request fields + response diff (primary vs secondary)
         Map<String, Difference> noiseDiff = new LinkedHashMap<>(requestDiff);
-        Difference.apply(primary.result(), secondary.result())
+        Difference.apply(primary.result(), secondary.result(), mode)
             .flattened().forEach((k, v) -> noiseDiff.put("response." + k, v));
 
         String id = idKnown.orElseGet(() -> randomAlphanumeric(10));
 
         rawCounter.counter().count(endpointName, rawDiff);
-        noiseCounter.counter().count(endpointName, mergeMaps(noiseDiff, requestDiff));
+        noiseCounter.counter().count(endpointName, noiseDiff);
 
-        if (!rawDiff.isEmpty()) {
-            List<FieldDifference> fieldDiffs = differencesToJson(rawDiff);
+        boolean hasResponseDiff = rawDiff.entrySet().stream()
+            .anyMatch(e -> e.getKey().startsWith("response.") && !(e.getValue() instanceof NoDifference<?>));
+
+        if (hasResponseDiff) {
+            Map<String, Difference> actualDiffs = new LinkedHashMap<>();
+            rawDiff.forEach((k, v) -> {
+                if (k.startsWith("response.") && !(v instanceof NoDifference<?>)) {
+                    actualDiffs.put(k, v);
+                }
+            });
+            List<FieldDifference> fieldDiffs = differencesToJson(actualDiffs);
+            Date now = new Date();
             DifferenceResult diffResult = new DifferenceResult(
                 id,
                 Span.current().getSpanContext().getTraceId(),
                 endpointName,
-                new Date().getTime(),
+                now.getTime(),
                 fieldDiffs,
                 JsonLifter.encode(request.result()),
                 new Responses(
                     JsonLifter.encode(primary.result()),
                     JsonLifter.encode(secondary.result()),
                     JsonLifter.encode(candidate.result())
-                )
+                ),
+                now
             );
             store.create(diffResult);
             return Optional.of(diffResult);

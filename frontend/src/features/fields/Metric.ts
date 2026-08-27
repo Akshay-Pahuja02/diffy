@@ -1,5 +1,6 @@
 export interface Metric {
     noise: number;
+    signal?: number;
     relative_difference: number;
     absolute_difference: number;
     differences: number;

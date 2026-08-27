@@ -54,6 +54,13 @@ public class TransformationCachingService {
         repository.deleteById(injectionPoint);
     }
 
+    /** Wipes all stored transformations and in-memory cache (used by /api/1/clear). */
+    public void clearAll() {
+        transformations.clear();
+        rxTx.clear();
+        repository.deleteAll();
+    }
+
     // Application for syntactic sugar
     public <Response> Endpoint<HttpRequest,Response> apply(TransformationEdge edge, Endpoint<HttpRequest,Response> endpoint) {
         Optional<Transformer<HttpRequest>> tx = get(edge);

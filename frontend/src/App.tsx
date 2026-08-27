@@ -28,7 +28,7 @@ function App() {
   const { runId, view, endpointName, fieldPrefix, inspectorDiff, noiseCancellationIsOn, search, dateTimeRange } =
     selections;
 
-  const runsRes = useFetchRunsQuery();
+  const runsRes = useFetchRunsQuery(undefined, { pollingInterval: 10_000 });
   const runs = useMemo(() => runsRes.data || [], [runsRes.data]);
   const activeRunId = runs.find((r) => r.id === runId)?.id || runs[0]?.id || 'current';
   const activeRun = runs.find((r) => r.id === activeRunId);
@@ -39,11 +39,14 @@ function App() {
     }
   }, [runs, runId, dispatch]);
 
-  const epsRes = useFetchEndpointsQuery({
-    excludeNoise: noiseCancellationIsOn,
-    start: dateTimeRange.start,
-    end: dateTimeRange.end,
-  });
+  const epsRes = useFetchEndpointsQuery(
+    {
+      excludeNoise: noiseCancellationIsOn,
+      start: dateTimeRange.start,
+      end: dateTimeRange.end,
+    },
+    { pollingInterval: 10_000 },
+  );
   const endpointSummaries: EndpointSummary[] = useMemo(() => {
     const eps = (epsRes.data as Record<string, { total: number; differences: number }>) || {};
     return Object.entries(eps).map(([path, m]) => {

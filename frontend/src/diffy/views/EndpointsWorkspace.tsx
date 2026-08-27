@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { Icons } from '../Icons';
 import { cx, fmtN, MethodPill, splitMethodPath, Tag } from '../primitives';
-import { buildFieldTree, flatten, hideNoise, maxFieldCount, stripTypeMarker } from './fieldTree';
+import { buildFieldTree, flatten, maxFieldCount, stripTypeMarker } from './fieldTree';
 import { EndpointSummary } from './OverviewView';
 import { useFetchDifferencesQuery, useFetchFieldsQuery } from '../../features/noise/noiseApiSlice';
+import { useFetchInfoQuery, useSetListComparisonModeMutation } from '../../features/info/infoApiSlice';
 import { DiffSelection } from '../../features/selections/selectionsSlice';
 
 interface Props {
@@ -30,6 +31,10 @@ export function EndpointsWorkspace({
   dateRange,
 }: Props) {
   const failingCount = endpoints.filter((e) => e.diffs > 0).length;
+  const infoRes = useFetchInfoQuery();
+  const [setListMode] = useSetListComparisonModeMutation();
+  const listMode = infoRes.data?.listComparisonMode || 'LEGACY';
+  const indexedOn = listMode === 'INDEXED';
 
   return (
     <div className="diffy-page diffy-workspace">
@@ -48,6 +53,17 @@ export function EndpointsWorkspace({
             </span>
             <span>Exclude noise</span>
           </label>
+          <label className="diffy-toggle" title="Strict index-by-index list comparison (faster on large payloads)">
+            <input
+              type="checkbox"
+              checked={indexedOn}
+              onChange={() => setListMode(indexedOn ? 'LEGACY' : 'INDEXED')}
+            />
+            <span className="diffy-toggle-track">
+              <span className="diffy-toggle-thumb" />
+            </span>
+            <span>Indexed lists</span>
+          </label>
         </div>
         <div className="diffy-pane-list">
           {endpoints.map((ep) => {
@@ -65,9 +81,11 @@ export function EndpointsWorkspace({
                 </div>
                 <div className="diffy-endpoint-bot">
                   <span className={cx('diffy-mono', ep.diffs > 0 && 'diffy-bad')}>
-                    {ep.diffs > 0 ? `${ep.diffs} diffs` : 'clean'}
+                    {ep.diffs > 0 ? `${fmtN(ep.diffs)} / ${fmtN(ep.requests)}` : 'clean'}
                   </span>
-                  <span className="diffy-text-muted diffy-mono">{fmtN(ep.requests)} req</span>
+                  <span className="diffy-text-muted diffy-mono" style={{ fontSize: 10 }}>
+                    {ep.diffs > 0 ? `${ep.diffRate.toFixed(1)}%` : `${fmtN(ep.requests)} req`}
+                  </span>
                   <div className="diffy-bar-track diffy-bar-track-sm">
                     <div
                       className="diffy-bar-fill is-bad"
@@ -131,7 +149,7 @@ function FieldsPane({
     ? {
         selectedEndpoint: encodeURIComponent(endpoint),
         includeWeights: false,
-        excludeNoise: false,
+        excludeNoise,
         start: dateRange.start,
         end: dateRange.end,
       }
@@ -139,10 +157,7 @@ function FieldsPane({
   const fieldsRes = useFetchFieldsQuery(args!, { skip: !endpoint });
   const rawFields = (fieldsRes.data as any)?.fields as Record<string, any> | undefined;
 
-  const tree = useMemo(() => {
-    const base = buildFieldTree(rawFields);
-    return excludeNoise ? hideNoise(base) : base;
-  }, [rawFields, excludeNoise]);
+  const tree = useMemo(() => buildFieldTree(rawFields), [rawFields]);
 
   const flat = useMemo(() => flatten(tree, openSet), [tree, openSet]);
   const maxCount = useMemo(() => maxFieldCount(tree), [tree]);
@@ -194,13 +209,12 @@ function FieldsPane({
                 />
               </button>
               <div className="diffy-tree-label">
-                <span className="diffy-mono diffy-tree-leaf">{leaf}</span>
+                <span className="diffy-mono diffy-tree-leaf" title={node.path}>{leaf}</span>
                 <span className="diffy-tree-type">{node.type}</span>
-                {node.suspectNoise && <Tag tone="noise" size="xs">noise?</Tag>}
                 {node.hot && <Tag tone="bad" size="xs">hot</Tag>}
               </div>
               <div className="diffy-tree-meta">
-                {node.count > 0 ? (
+                {node.count > 0 && (
                   <>
                     <div
                       className="diffy-heat"
@@ -213,10 +227,6 @@ function FieldsPane({
                       {node.count}
                     </span>
                   </>
-                ) : (
-                  <span className="diffy-mono diffy-text-muted" style={{ fontSize: 11 }}>
-                    0
-                  </span>
                 )}
               </div>
             </div>

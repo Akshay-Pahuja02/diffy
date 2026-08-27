@@ -81,17 +81,22 @@ public interface Difference {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     static Difference apply(Object leftRaw, Object rightRaw) {
+        return apply(leftRaw, rightRaw, ListComparisonMode.LEGACY);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    static Difference apply(Object leftRaw, Object rightRaw, ListComparisonMode mode) {
         Object l = lift(leftRaw);
         Object r = lift(rightRaw);
 
         if (isPrimitive(l) && Objects.equals(l, r)) return new NoDifference<>(l);
         if (isPrimitive(l) && l.getClass() == r.getClass()) return new PrimitiveDifference<>(l, r);
-        if (l instanceof List<?> ls && r instanceof List<?> rs) return diffSeq((List<Object>) ls, (List<Object>) rs);
+        if (l instanceof List<?> ls && r instanceof List<?> rs) return diffSeq((List<Object>) ls, (List<Object>) rs, mode);
         if (l instanceof Set<?> ls && r instanceof Set<?> rs) return diffSet((Set<Object>) ls, (Set<Object>) rs);
-        if (l instanceof FieldMap lm && r instanceof FieldMap rm) return diffObjectMap(lm, rm);
-        if (l instanceof Map<?, ?> lm && r instanceof Map<?, ?> rm) return diffMap((Map<Object, Object>) lm, (Map<Object, Object>) rm);
+        if (l instanceof FieldMap lm && r instanceof FieldMap rm) return diffObjectMap(lm, rm, mode);
+        if (l instanceof Map<?, ?> lm && r instanceof Map<?, ?> rm) return diffMap((Map<Object, Object>) lm, (Map<Object, Object>) rm, mode);
         if (l.getClass() != r.getClass()) return new TypeDifference<>(l, r);
-        return diffObject(l, r);
+        return diffObject(l, r, mode);
     }
 
     static <A> TerminalDifference diffSet(Set<A> left, Set<A> right) {
@@ -104,20 +109,34 @@ public interface Difference {
     }
 
     @SuppressWarnings("unchecked")
-    static <A> SeqDifference diffSeq(List<A> left, List<A> right) {
+    static <A> Difference diffSeq(List<A> left, List<A> right, ListComparisonMode mode) {
+        if (mode == ListComparisonMode.INDEXED) {
+            if (left.size() != right.size()) {
+                return new SeqSizeDifference<>(left, right);
+            }
+            List<Difference> diffs = new ArrayList<>(left.size());
+            for (int i = 0; i < left.size(); i++) {
+                diffs.add(apply(left.get(i), right.get(i), mode));
+            }
+            return new IndexedDifference(diffs);
+        }
+
         List<A> leftNotRight = new ArrayList<>(left);
         leftNotRight.removeAll(right);
         List<A> rightNotLeft = new ArrayList<>(right);
         rightNotLeft.removeAll(left);
 
         if (leftNotRight.isEmpty() && rightNotLeft.isEmpty()) {
+            if (left.equals(right)) {
+                return new NoDifference<>(left);
+            }
             List<Integer> lPattern = left.stream().map(left::indexOf).collect(Collectors.toList());
             List<Integer> rPattern = right.stream().map(left::indexOf).collect(Collectors.toList());
             return new OrderingDifference(lPattern, rPattern);
         } else if (left.size() == right.size()) {
             List<Difference> diffs = new ArrayList<>();
             for (int i = 0; i < left.size(); i++) {
-                diffs.add(apply(left.get(i), right.get(i)));
+                diffs.add(apply(left.get(i), right.get(i), mode));
             }
             return new IndexedDifference(diffs);
         } else {
@@ -126,25 +145,26 @@ public interface Difference {
     }
 
     @SuppressWarnings("unchecked")
-    static <A> MapDifference<A> diffMap(Map<A, Object> lm, Map<A, Object> rm) {
+    static <A> MapDifference<A> diffMap(Map<A, Object> lm, Map<A, Object> rm, ListComparisonMode mode) {
         TerminalDifference keysDiff = diffSet(lm.keySet(), rm.keySet());
         Set<A> shared = new HashSet<>(lm.keySet());
         shared.retainAll(rm.keySet());
         Map<A, Difference> valueDiffs = new LinkedHashMap<>();
         for (A key : shared) {
-            valueDiffs.put(key, apply(lm.get(key), rm.get(key)));
+            valueDiffs.put(key, apply(lm.get(key), rm.get(key), mode));
         }
         return new MapDifference<>(keysDiff, valueDiffs);
     }
 
-    static ObjectDifference diffObjectMap(FieldMap lm, FieldMap rm) {
+    static ObjectDifference diffObjectMap(FieldMap lm, FieldMap rm, ListComparisonMode mode) {
         return new ObjectDifference(diffMap(
             new LinkedHashMap<>(lm.value),
-            new LinkedHashMap<>(rm.value)
+            new LinkedHashMap<>(rm.value),
+            mode
         ));
     }
 
-    static ObjectDifference diffObject(Object left, Object right) {
-        return new ObjectDifference(diffMap(mkMap(left), mkMap(right)));
+    static ObjectDifference diffObject(Object left, Object right, ListComparisonMode mode) {
+        return new ObjectDifference(diffMap(mkMap(left), mkMap(right), mode));
     }
 }

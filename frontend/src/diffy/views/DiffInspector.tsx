@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Icons } from '../Icons';
 import { cx, MethodPill, splitMethodPath } from '../primitives';
 import { useFetchRequestQuery } from '../../features/requests/requestsApiSlice';
+import { usePostNoiseMutation } from '../../features/noise/noiseApiSlice';
 import { DiffSelection } from '../../features/selections/selectionsSlice';
 
 type LineStatus = 'match' | 'diff' | 'noise' | 'mixed';
@@ -93,27 +94,134 @@ export function buildLines(p: unknown, s: unknown, c: unknown): Line[] {
   return lines;
 }
 
+function formatDiffText(
+  selection: DiffSelection,
+  built: BuiltRequest,
+  lines: Line[],
+  tab: 'response' | 'headers' | 'request',
+  layout: 'split' | 'threeway',
+): string {
+  const section = tab === 'headers' ? 'Response headers' : tab === 'request' ? 'Request' : 'Response body';
+  const columns: ColumnKey[] = layout === 'split' ? ['primary', 'candidate'] : ['primary', 'secondary', 'candidate'];
+  const colLabels: Record<ColumnKey, string> = {
+    primary: 'Primary',
+    secondary: 'Secondary',
+    candidate: 'Candidate',
+  };
+  const diffLines = lines.filter((l) => l.kind === 'leaf' && l.status !== 'match');
+  const rows = diffLines.map((l) => {
+    const key = l.key != null ? (typeof l.key === 'number' ? `[${l.key}]` : String(l.key)) : '(root)';
+    const vals = columns.map((col) => `${colLabels[col]}: ${l.values[col]}`).join(' | ');
+    return `- ${key} [${l.status}] ${vals}`;
+  });
+  return [
+    `Diffy inspect — ${section}`,
+    `Endpoint: ${selection.endpoint}`,
+    `Field: ${selection.field}`,
+    `Request ID: ${selection.requestId}`,
+    '',
+    ...rows,
+    '',
+    'Full responses:',
+    `Primary: ${JSON.stringify(built.responseBody.primary, null, 2)}`,
+    ...(layout === 'threeway'
+      ? [`Secondary: ${JSON.stringify(built.responseBody.secondary, null, 2)}`]
+      : []),
+    `Candidate: ${JSON.stringify(built.responseBody.candidate, null, 2)}`,
+  ].join('\n');
+}
+
+function formatRegressionReport(
+  selection: DiffSelection,
+  built: BuiltRequest,
+  lines: Line[],
+  method: string,
+  path: string,
+): string {
+  const diffLines = lines.filter((l) => l.kind === 'leaf' && (l.status === 'diff' || l.status === 'mixed'));
+  const samples = diffLines.slice(0, 5).map((l) => {
+    const key = l.key != null ? (typeof l.key === 'number' ? `[${l.key}]` : String(l.key)) : '(root)';
+    return `  - ${key}: primary=${l.values.primary}, candidate=${l.values.candidate}`;
+  });
+  return [
+    '# Diffy regression report',
+    '',
+    '## Summary',
+    `- Endpoint: \`${selection.endpoint}\``,
+    `- Field: \`${selection.field}\``,
+    `- Request: \`${method} ${path}\``,
+    `- Request ID: \`${selection.requestId}\``,
+    `- Diff lines: ${diffLines.length}`,
+    '',
+    '## Sample differences',
+    ...(samples.length ? samples : ['  - (no leaf diffs in current view)']),
+    '',
+    '## Primary response (excerpt)',
+    '```json',
+    JSON.stringify(built.responseBody.primary, null, 2),
+    '```',
+    '',
+    '## Candidate response (excerpt)',
+    '```json',
+    JSON.stringify(built.responseBody.candidate, null, 2),
+    '```',
+    '',
+    `_Generated from Diffy at ${new Date().toISOString()}_`,
+  ].join('\n');
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 interface BuiltRequest {
   request: Record<string, unknown>;
-  responseHeaders: { primary: Record<string, unknown>; candidate: Record<string, unknown> };
-  responseBody: { primary: unknown; candidate: unknown };
+  requestMeta: Record<string, unknown>;
+  requestBody: unknown;
+  responseHeaders: { primary: Record<string, unknown>; secondary: Record<string, unknown>; candidate: Record<string, unknown> };
+  responseBody: { primary: unknown; secondary: unknown; candidate: unknown };
   status: { primary?: string | number; candidate?: string | number };
 }
 
+/** Unwrap Diffy StringLifter shape: { type: "json", value: ... } */
+function unwrapLifted(v: unknown): unknown {
+  if (!isObj(v)) return v;
+  if (v.type === 'json' && 'value' in v) return v.value;
+  return v;
+}
+
 function build(raw: any): BuiltRequest | null {
-  if (!raw) return null;
+  if (!raw || raw.error) return null;
+  if (!raw.left || !raw.right) return null;
   const request = (raw.request as Record<string, unknown>) || {};
   const left = (raw.left as Record<string, unknown>) || {};
   const right = (raw.right as Record<string, unknown>) || {};
+  const secondary = (raw.secondary as Record<string, unknown>) || left;
+  const requestBody = unwrapLifted(request.body);
   return {
     request,
+    requestMeta: {
+      method: request.method,
+      path: request.path,
+      uri: request.uri,
+      headers: request.headers,
+      params: request.params,
+    },
+    requestBody,
     responseHeaders: {
-      primary: (left.headers as Record<string, unknown>) || {},
-      candidate: (right.headers as Record<string, unknown>) || {},
+      primary: (unwrapLifted(left.headers) as Record<string, unknown>) || {},
+      secondary: (unwrapLifted(secondary.headers) as Record<string, unknown>) || {},
+      candidate: (unwrapLifted(right.headers) as Record<string, unknown>) || {},
     },
     responseBody: {
-      primary: left.body,
-      candidate: right.body,
+      primary: unwrapLifted(left.body),
+      secondary: unwrapLifted(secondary.body),
+      candidate: unwrapLifted(right.body),
     },
     status: {
       primary: left.status as string | number | undefined,
@@ -188,18 +296,29 @@ export function DiffInspector({
   const [smart, setSmart] = useState(true);
   const [replaying, setReplaying] = useState(false);
   const [replayResult, setReplayResult] = useState<null | { ms: number }>(null);
+  const [copyFeedback, setCopyFeedback] = useState<'diff' | 'report' | null>(null);
+  const [markingNoise, setMarkingNoise] = useState(false);
 
   const reqRes = useFetchRequestQuery(selection.requestId);
   const raw = reqRes.data as any;
   const built = useMemo(() => build(raw), [raw]);
+  const [postNoise] = usePostNoiseMutation();
 
   const bodyLines = useMemo(() => {
     if (!built) return [];
-    return buildLines(built.responseBody.primary, built.responseBody.primary, built.responseBody.candidate);
+    return buildLines(
+      built.responseBody.primary,
+      built.responseBody.secondary,
+      built.responseBody.candidate,
+    );
   }, [built]);
   const headerLines = useMemo(() => {
     if (!built) return [];
-    return buildLines(built.responseHeaders.primary, built.responseHeaders.primary, built.responseHeaders.candidate);
+    return buildLines(
+      built.responseHeaders.primary,
+      built.responseHeaders.secondary,
+      built.responseHeaders.candidate,
+    );
   }, [built]);
 
   const counts = useMemo(() => {
@@ -215,10 +334,14 @@ export function DiffInspector({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault();
+        handleMarkNoise();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, selection]);
 
   const doReplay = () => {
     setReplaying(true);
@@ -236,9 +359,39 @@ export function DiffInspector({
     candidate: { label: 'Candidate' },
   };
   const activeLines = tab === 'headers' ? headerLines : bodyLines;
-
   const method = (built?.request?.method as string) || splitMethodPath(selection.endpoint).method;
   const path = (built?.request?.uri as string) || (built?.request?.path as string) || splitMethodPath(selection.endpoint).path;
+
+  const showCopyFeedback = (kind: 'diff' | 'report') => {
+    setCopyFeedback(kind);
+    window.setTimeout(() => setCopyFeedback(null), 2000);
+  };
+
+  const doCopyDiff = async () => {
+    if (!built) return;
+    const text = formatDiffText(selection, built, activeLines, tab, layout);
+    if (await copyText(text)) showCopyFeedback('diff');
+  };
+
+  const doFileReport = async () => {
+    if (!built) return;
+    const text = formatRegressionReport(selection, built, bodyLines, method, path);
+    if (await copyText(text)) showCopyFeedback('report');
+  };
+
+  const handleMarkNoise = async () => {
+    if (!selection.field || !selection.endpoint) return;
+    setMarkingNoise(true);
+    try {
+      await postNoise({
+        endpoint: encodeURIComponent(selection.endpoint),
+        fieldPrefix: encodeURIComponent(selection.field),
+        isNoise: true,
+      });
+    } finally {
+      setMarkingNoise(false);
+    }
+  };
 
   return (
     <div className="diffy-overlay" onClick={onClose}>
@@ -312,22 +465,45 @@ export function DiffInspector({
               </>
             )}
           </button>
-          <button className="diffy-btn is-ghost is-sm">
-            <Icons.Noise size={13} /> Mark as noise
+          <button 
+            className="diffy-btn is-ghost is-sm" 
+            onClick={handleMarkNoise}
+            disabled={markingNoise || !selection.field}
+          >
+            <Icons.Noise size={13} /> {markingNoise ? 'Marking...' : 'Mark as noise'}
           </button>
         </div>
 
         <div className="diffy-sheet-body">
           {!built && (
             <div className="diffy-empty" style={{ flex: 1 }}>
-              <Icons.Spinner size={20} />
-              <div>Loading request…</div>
+              {reqRes.isLoading ? (
+                <>
+                  <Icons.Spinner size={20} />
+                  <div>Loading request…</div>
+                </>
+              ) : (
+                <>
+                  <Icons.Fail size={20} />
+                  <div>
+                    Could not load request <span className="diffy-mono">{selection.requestId}</span>.
+                  </div>
+                  <div className="diffy-text-muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    {(raw as any)?.error ||
+                      'Missing primary/candidate payloads. Try: curl /api/1/requests/' +
+                        selection.requestId +
+                        '?include_request=true'}
+                  </div>
+                </>
+              )}
             </div>
           )}
           {built && tab === 'request' && (
             <div className="diffy-request-pane">
-              <div className="diffy-card-sub" style={{ padding: '14px 18px 6px' }}>Request</div>
-              <pre className="diffy-codeblock">{JSON.stringify(built.request, null, 2)}</pre>
+              <div className="diffy-card-sub" style={{ padding: '14px 18px 6px' }}>Metadata</div>
+              <pre className="diffy-codeblock">{JSON.stringify(built.requestMeta, null, 2)}</pre>
+              <div className="diffy-card-sub" style={{ padding: '14px 18px 6px' }}>Body (proto → JSON)</div>
+              <pre className="diffy-codeblock">{JSON.stringify(built.requestBody, null, 2)}</pre>
             </div>
           )}
           {built && tab !== 'request' && (
@@ -378,11 +554,21 @@ export function DiffInspector({
             </div>
           )}
           <div style={{ flex: 1 }} />
-          <button className="diffy-btn is-ghost is-sm">
-            <Icons.Copy size={13} /> Copy diff
+          <button
+            className="diffy-btn is-ghost is-sm"
+            onClick={doCopyDiff}
+            disabled={!built}
+            title="Copy diff summary to clipboard"
+          >
+            <Icons.Copy size={13} /> {copyFeedback === 'diff' ? 'Copied!' : 'Copy diff'}
           </button>
-          <button className="diffy-btn is-primary is-sm">
-            File regression report <Icons.ArrowRight size={13} />
+          <button
+            className="diffy-btn is-primary is-sm"
+            onClick={doFileReport}
+            disabled={!built}
+            title="Copy regression report (paste into Jira/Slack)"
+          >
+            {copyFeedback === 'report' ? 'Report copied!' : 'File regression report'} <Icons.ArrowRight size={13} />
           </button>
         </div>
       </div>

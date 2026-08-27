@@ -1,6 +1,7 @@
 package ai.diffy.analysis;
 
 import ai.diffy.compare.Difference;
+import ai.diffy.compare.ListComparisonMode;
 import ai.diffy.compare.NoDifference;
 import ai.diffy.metrics.MetricsReceiver;
 import io.micrometer.core.instrument.Counter;
@@ -27,11 +28,9 @@ class InMemoryFieldMetadata implements FieldMetadata {
     @Override public int differences() { return diffsAtomic.get(); }
     @Override public int weight()      { return sibsAtomic.get(); }
 
-    void apply(Map<String, Difference> diffs) {
+    void increment() {
         differenceCounter.increment();
-        siblingsCounter.increment(diffs.size());
         diffsAtomic.incrementAndGet();
-        sibsAtomic.addAndGet(diffs.size());
     }
 }
 
@@ -75,7 +74,11 @@ class InMemoryEndpointMetadata implements EndpointMetadata {
             differenceCounter.increment();
             differenceAtomic.incrementAndGet();
         }
-        diffs.forEach((fieldPath, diff) -> getMetadata(fieldPath).apply(diffs));
+        diffs.forEach((fieldPath, diff) -> {
+            if (!(diff instanceof NoDifference<?>)) {
+                getMetadata(fieldPath).increment();
+            }
+        });
     }
 }
 

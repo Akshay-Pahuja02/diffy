@@ -1,8 +1,14 @@
 package ai.diffy;
 
 import ai.diffy.analysis.*;
+import ai.diffy.compare.Difference;
+import ai.diffy.lifter.JsonLifter;
+import ai.diffy.lifter.ProtoConfigService;
 import ai.diffy.repository.DifferenceResultRepository;
 import ai.diffy.repository.NoiseRepository;
+import ai.diffy.transformations.TransformationCachingService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
@@ -13,10 +19,14 @@ import java.util.stream.Collectors;
 @RestController
 public class ApiController {
 
+    private static final Logger log = LoggerFactory.getLogger(ApiController.class);
+
     private final NoiseRepository noise;
     private final DifferenceResultRepository repository;
+    private final TransformationCachingService transformations;
     private final Settings settings;
-    private final DynamicAnalyzer dynamicAnalyzer;
+    private final DynamicAnalyzer jsonDynamicAnalyzer;
+    private final DynamicAnalyzer protoDynamicAnalyzer;
 
     private final Map<String, String> MissingEndpointException;
     private final Map<String, String> MissingEndpointPathException;
@@ -28,11 +38,25 @@ public class ApiController {
     public ApiController(
             NoiseRepository noise,
             DifferenceResultRepository repository,
-            Settings settings) {
+            TransformationCachingService transformations,
+            Settings settings,
+            ProtoConfigService protoConfigService) {
         this.noise          = noise;
         this.repository     = repository;
+        this.transformations = transformations;
         this.settings       = settings;
-        this.dynamicAnalyzer = new DynamicAnalyzer(repository);
+        this.jsonDynamicAnalyzer = new JSONDynamicAnalyzer();
+
+        DynamicAnalyzer proto = null;
+        if (protoConfigService != null && protoConfigService.isEnabled()) {
+            try {
+                proto = new ProtoDynamicAnalyzer(protoConfigService);
+            } catch (Exception e) {
+                log.error("Failed to initialize ProtoDynamicAnalyzer; "
+                    + "proto requests will fall back to JSON analysis", e);
+            }
+        }
+        this.protoDynamicAnalyzer = proto;
 
         MissingEndpointException     = Renderer.error("Specify an endpoint");
         MissingEndpointPathException = Renderer.error("Specify an endpoint and path");
@@ -44,8 +68,41 @@ public class ApiController {
         );
     }
 
+    /**
+     * Selects the {@link DynamicAnalyzer} implementation for a stored record based on the content
+     * type declared by its request. Proto APIs ({@code application/x-protobuf}) use
+     * {@link ProtoDynamicAnalyzer} when configured; everything else falls back to the JSON analyzer.
+     */
+    private DynamicAnalyzer selectAnalyzer(String contentType) {
+        if (protoDynamicAnalyzer != null && protoDynamicAnalyzer.supports(contentType)) {
+            return protoDynamicAnalyzer;
+        }
+        return jsonDynamicAnalyzer;
+    }
+
     private Report proxy(long start, long end) {
-        return dynamicAnalyzer.filter(start, end);
+        return AbstractDynamicAnalyzer.replay(repository, start, end, this::selectAnalyzer, settings);
+    }
+
+    private Map<String, JoinedField> visibleFields(
+            JoinedEndpoint joinedEndpoint,
+            String endpoint,
+            boolean excludeNoise) {
+        List<String> noisyFields = excludeNoise
+            ? noise.findById(endpoint).map(n -> n.noisyfields).orElse(List.of())
+            : List.of();
+
+        return joinedEndpoint.fields().entrySet().stream()
+            .filter(e -> !e.getKey().startsWith("request."))
+            .filter(e -> e.getValue().raw().differences() > 0)
+            .filter(e -> {
+                if (!excludeNoise) return true;
+                JoinedField field = e.getValue();
+                return thresholdFilter.test(field)
+                    && noisyFields.stream().noneMatch(prefix -> e.getKey().startsWith(prefix));
+            })
+            .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
+                (a, b) -> a, LinkedHashMap::new));
     }
 
     private Map<String, Object> endpointMap(
@@ -53,23 +110,7 @@ public class ApiController {
             JoinedEndpoint joinedEndpoint,
             boolean includeWeights,
             boolean excludeNoise) {
-        Map<String, JoinedField> fieldsMap;
-        if (excludeNoise) {
-            List<String> noisyFields = noise.findById(ep)
-                .map(n -> n.noisyfields)
-                .orElse(List.of());
-            fieldsMap = joinedEndpoint.fields().entrySet().stream()
-                .filter(e -> {
-                    String path = e.getKey();
-                    JoinedField field = e.getValue();
-                    return thresholdFilter.test(field)
-                        && noisyFields.stream().noneMatch(path::startsWith);
-                })
-                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
-                    (a, b) -> a, LinkedHashMap::new));
-        } else {
-            fieldsMap = joinedEndpoint.fields();
-        }
+        Map<String, JoinedField> fieldsMap = visibleFields(joinedEndpoint, ep, excludeNoise);
 
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("endpoint", Renderer.endpoint(joinedEndpoint.endpoint()));
@@ -129,17 +170,47 @@ public class ApiController {
             @PathVariable("endpoint")                                      String endpoint,
             @PathVariable("path")                                          String path,
             @RequestParam(name = "include_request", defaultValue = "false") boolean includeRequest,
+            @RequestParam(name = "exclude_noise",   defaultValue = "true")  boolean excludeNoise,
             @RequestParam(name = "start",           defaultValue = "0")     long start,
             @RequestParam(name = "end",             defaultValue = "1701001001000") long end) {
         if (endpoint.isEmpty() || path.isEmpty()) {
             return new LinkedHashMap<>(MissingEndpointPathException);
         }
-        List<DifferenceResult> drs = proxy(start, end).collector()
-            .prefix(new Field(endpoint, path));
+        Report report = proxy(start, end);
+        JoinedEndpoint joined = report.joinedDifferences().endpoint(endpoint);
+        Map<String, JoinedField> joinedFields = visibleFields(joined, endpoint, excludeNoise);
+        List<String> noisyPrefixes = excludeNoise
+            ? noise.findById(endpoint).map(n -> n.noisyfields).orElse(List.of())
+            : List.of();
+
+        List<DifferenceResult> drs = report.collector().prefix(new Field(endpoint, path));
+
+        List<Map<String, Object>> requests = new ArrayList<>();
+        for (DifferenceResult dr : drs) {
+            Map<String, Difference> noiseByPath = excludeNoise
+                ? NoiseFilter.decodeNoiseFromStored(dr, settings.listComparisonMode())
+                : null;
+
+            Map<String, Object> rawDiffs = Renderer.differences(dr.differences);
+            Map<String, Object> filtered = excludeNoise
+                ? NoiseFilter.filterDifferenceMap(rawDiffs, noiseByPath, joinedFields, thresholdFilter, noisyPrefixes)
+                : rawDiffs;
+
+            if (filtered.isEmpty()) continue;
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", dr.id);
+            row.put("differences", filtered);
+            if (includeRequest) {
+                row.put("request", JsonLifter.decode(dr.request));
+            }
+            requests.add(row);
+        }
+
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("endpoint", endpoint);
         m.put("path",     path);
-        m.put("requests", Renderer.differenceResults(drs, includeRequest));
+        m.put("requests", requests);
         return m;
     }
 
@@ -176,7 +247,10 @@ public class ApiController {
 
     @GetMapping(path = "/api/1/clear")
     public Map<String, String> clear() {
-        return Renderer.success("Diffs cleared");
+        repository.deleteAll();
+        noise.deleteAll();
+        transformations.clearAll();
+        return Renderer.success("Diffs, noise rules, and transformations cleared");
     }
 
     @GetMapping(path = "/api/1/info")
@@ -188,8 +262,16 @@ public class ApiController {
         m.put("secondary",          httpServiceToMap(settings.secondary.toString()));
         m.put("relativeThreshold",  settings.relativeThreshold);
         m.put("absoluteThreshold",  settings.absoluteThreshold);
+        m.put("listComparisonMode", settings.listComparisonMode().name());
         m.put("protocol",           "http");
         return m;
+    }
+
+    @PutMapping(path = "/api/1/settings/listComparisonMode")
+    public Map<String, String> setListComparisonMode(@RequestBody Map<String, String> body) {
+        String mode = body.getOrDefault("mode", "LEGACY").trim().toUpperCase();
+        settings.setListComparisonMode(ai.diffy.compare.ListComparisonMode.valueOf(mode));
+        return Map.of("listComparisonMode", settings.listComparisonMode().name());
     }
 
     private Map<String, String> httpServiceToMap(String target) {

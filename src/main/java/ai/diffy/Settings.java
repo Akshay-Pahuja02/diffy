@@ -1,6 +1,8 @@
 package ai.diffy;
 
 import ai.diffy.functional.functions.Try;
+import ai.diffy.lifter.ProtoConfig;
+import ai.diffy.compare.ListComparisonMode;
 import ai.diffy.util.ResourceMatcher;
 import ai.diffy.util.ResponseMode;
 import org.slf4j.Logger;
@@ -35,6 +37,10 @@ public class Settings {
     public final Optional<ResourceMatcher> resourceMatcher;
     public final ResponseMode responseMode;
     public final boolean dockerComposeLocal;
+    // Proto support: per-URI mappings (uri -> jar location + response proto class). Drives both the
+    // live-proxy proto lifting and ProtoDynamicAnalyzer's replay-time decoding via ProtoConfigService.
+    public final Optional<ProtoConfig> protoConfig;
+    private volatile ListComparisonMode listComparisonMode;
 
     public Settings(
             @Value("${proxy.port}") int servicePort,
@@ -52,7 +58,9 @@ public class Settings {
             @Value("${maxHeaderSize:8192}") int maxHeaderSize,
             @Value("${resource.mapping:}") String resourceMappings,
             @Value("${responseMode:primary}") String mode,
-            @Value("${dockerComposeLocal:false}") boolean dockerComposeLocal) {
+            @Value("${dockerComposeLocal:false}") boolean dockerComposeLocal,
+            @Value("${proto.config:}") String protoConfigPath,
+            @Value("${listComparisonMode:LEGACY}") String listComparisonMode) {
 
         this.servicePort               = servicePort;
         this.protocol                  = protocol;
@@ -66,6 +74,18 @@ public class Settings {
         this.maxHeaderSize             = maxHeaderSize;
         this.responseMode              = ResponseMode.valueOf(mode);
         this.dockerComposeLocal        = dockerComposeLocal;
+
+        Optional<ProtoConfig> loadedProtoConfig = Optional.empty();
+        if (protoConfigPath != null && !protoConfigPath.isBlank()) {
+            try {
+                loadedProtoConfig = Optional.of(ProtoConfig.loadFromFile(protoConfigPath.trim()));
+                log.info("Loaded proto config from {}", protoConfigPath);
+            } catch (Exception e) {
+                log.error("Failed to load proto config from {}", protoConfigPath, e);
+            }
+        }
+        this.protoConfig = loadedProtoConfig;
+        this.listComparisonMode = ListComparisonMode.valueOf(listComparisonMode.trim().toUpperCase());
 
         this.candidate  = Downstream.of(candidateAddress);
         this.primary    = Downstream.of(primaryAddress);
@@ -127,4 +147,7 @@ public class Settings {
     public boolean excludeHttpHeadersComparison()     { return excludeHttpHeadersComparison; }
     public ResponseMode responseMode()                { return responseMode; }
     public Optional<ResourceMatcher> resourceMatcher() { return resourceMatcher; }
+    public ListComparisonMode listComparisonMode() { return listComparisonMode; }
+    public void setListComparisonMode(ListComparisonMode mode) { this.listComparisonMode = mode; }
+    public Optional<ProtoConfig> protoConfig() { return protoConfig; }
 }

@@ -1,56 +1,24 @@
 package ai.diffy.analysis;
 
 import ai.diffy.lifter.FieldMap;
-import ai.diffy.lifter.JsonLifter;
-import ai.diffy.lifter.Message;
-import ai.diffy.repository.DifferenceResultRepository;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Optional;
 
 /**
- * Filters a DifferenceAnalyzer using a specified time range to output another DifferenceAnalyzer.
+ * Adaptor abstraction over the response payload format of a compared API.
+ *
+ * <p>The core Diffy comparison logic is unchanged across implementations; the only thing that varies
+ * is how a stored response payload is turned back into a {@link FieldMap}. Implementations are chosen
+ * per record based on the request's content-type header (see
+ * {@link AbstractDynamicAnalyzer#replay}). See {@link JSONDynamicAnalyzer} (JSON payloads) and
+ * {@link ProtoDynamicAnalyzer} (protobuf payloads).
  */
-public class DynamicAnalyzer {
+public interface DynamicAnalyzer {
 
-    private final DifferenceResultRepository repository;
+    /** Whether this analyzer handles responses for a request declaring the given content type. */
+    boolean supports(String contentType);
 
-    public DynamicAnalyzer(DifferenceResultRepository repository) {
-        this.repository = repository;
-    }
-
-    public static FieldMap decodeFieldMap(String payload) {
-        return objectNodeToFieldMap((ObjectNode) JsonLifter.decode(payload));
-    }
-
-    public static FieldMap objectNodeToFieldMap(ObjectNode objectNode) {
-        Map<String, Object> acc = new LinkedHashMap<>();
-        objectNode.fields().forEachRemaining(entry ->
-            acc.put(entry.getKey(), entry.getValue())
-        );
-        if (acc.containsKey("headers")) {
-            acc.put("headers", objectNodeToFieldMap((ObjectNode) acc.get("headers")));
-        }
-        return new FieldMap(acc);
-    }
-
-    public Report filter(long start, long end) {
-        InMemoryDifferenceCollector collector = new InMemoryDifferenceCollector();
-        RawDifferenceCounter raw   = new RawDifferenceCounter(InMemoryDifferenceCollector.newCounter("raw"));
-        NoiseDifferenceCounter noise = new NoiseDifferenceCounter(InMemoryDifferenceCollector.newCounter("noise"));
-        JoinedDifferences joinedDifferences = new JoinedDifferences(raw, noise);
-        DifferenceAnalyzer analyzer = new DifferenceAnalyzer(raw, noise, collector);
-
-        repository.findByTimestampMsecBetween(start, end).forEach(dr -> {
-            Message request   = new Message(Optional.of(dr.endpoint), decodeFieldMap(dr.request));
-            Message primary   = new Message(Optional.of(dr.endpoint), decodeFieldMap(dr.responses.primary));
-            Message secondary = new Message(Optional.of(dr.endpoint), decodeFieldMap(dr.responses.secondary));
-            Message candidate = new Message(Optional.of(dr.endpoint), decodeFieldMap(dr.responses.candidate));
-            analyzer.apply(request, candidate, primary, secondary, Optional.of(dr.id));
-        });
-
-        return new Report(analyzer, joinedDifferences, collector, start, end);
-    }
+    /**
+     * Adaptor: convert a stored response payload into a {@link FieldMap} for comparison. The request
+     * path is provided so per-URI configuration (e.g. the proto message class) can be resolved.
+     */
+    FieldMap decodeResponseFieldMap(String payload, String requestPath);
 }

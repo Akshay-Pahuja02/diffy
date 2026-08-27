@@ -9,6 +9,8 @@ import ai.diffy.functional.topology.ControlFlowLogger;
 import ai.diffy.functional.topology.InvocationLogger;
 import ai.diffy.lifter.AnalysisRequest;
 import ai.diffy.lifter.HttpLifter;
+import ai.diffy.lifter.LiftResponseInput;
+import ai.diffy.lifter.ProtoConfigService;
 import ai.diffy.repository.DifferenceResultRepository;
 import ai.diffy.transformations.TransformationCachingService;
 import ai.diffy.transformations.TransformationEdge;
@@ -68,7 +70,8 @@ public class ReactorHttpDifferenceProxy {
     public ReactorHttpDifferenceProxy(
             @Autowired Settings settings,
             @Autowired DifferenceResultRepository repository,
-            @Autowired TransformationCachingService transformations) {
+            @Autowired TransformationCachingService transformations,
+            @Autowired ProtoConfigService protoConfigService) {
         this.settings = settings;
         this.transformations = transformations;
         this.collector = new InMemoryDifferenceCollector();
@@ -85,7 +88,7 @@ public class ReactorHttpDifferenceProxy {
             return None;
         };
 
-        this.lifter = new HttpLifter(settings);
+        this.lifter = new HttpLifter(settings, protoConfigService);
         log.info("Starting Proxy server on port "+ settings.servicePort());
 
         /**
@@ -107,7 +110,7 @@ public class ReactorHttpDifferenceProxy {
         ));
         analyzer = Async.common(Endpoint.from(
             "analyzerWithRepo",
-                Endpoint.from("analyzer", () -> new DifferenceAnalyzer(raw, noise, collector)::analyze),
+                Endpoint.from("analyzer", () -> new DifferenceAnalyzer(raw, noise, collector, settings)::analyze),
                 Endpoint.from("repo", () -> repository::save),
                 (BinaryOperator<AnalysisRequest,
                         AnalysisRequest, Optional<DifferenceResult>,
@@ -150,6 +153,12 @@ public class ReactorHttpDifferenceProxy {
     }
 
     private Publisher<Void> selectHandler(HttpServerRequest req, HttpServerResponse res) {
+        // Log ALL incoming requests to identify traffic source
+        log.info(">>> INCOMING REQUEST: method={}, uri={}, path={}, remoteAddress={}, headers={}", 
+            req.method(), req.uri(), req.path(),
+            req.remoteAddress(), 
+            req.requestHeaders().names());
+        
         if(!settings.allowHttpSideEffects() && methodsWithSideEffects.contains(req.method())){
             log.info("Ignoring {} request for safety. Use --allowHttpSideEffects=true to turn safety off.", req.method());
             return res.send();

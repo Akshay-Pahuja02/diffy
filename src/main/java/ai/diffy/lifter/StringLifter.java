@@ -17,8 +17,8 @@ public class StringLifter {
             m.put("value", JsonLifter.lift(JsonLifter.decode(string)));
             return new FieldMap(m);
         } catch (Exception e) {
-            // Not JSON — check for HTML
-            if (HTML_REGEX.matcher(string).find()) {
+            // Not JSON — check for HTML (skip large/binary bodies to avoid regex stack overflows)
+            if (string.length() <= 8192 && string.indexOf('<') >= 0 && HTML_REGEX.matcher(string).find()) {
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("type", "html");
                 m.put("value", HtmlLifter.lift(HtmlLifter.decode(string)));

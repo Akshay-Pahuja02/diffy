@@ -1,0 +1,16 @@
+{
+  "mappings": [
+    {
+      "uri": "/serviceability/v1",
+      "jarLocation": "schemas/locus-models-1.0.1-jdk-17.jar",
+      "requestType": "com.flipkart.locusmodels.type.request.ServiceabilityRequest",
+      "responseType": "com.flipkart.locusmodels.type.response.ServiceabilityResponse"
+    },
+    {
+      "uri": "postal_codes/v4",
+      "jarLocation": "schemas/locus-models-1.0.1-jdk-17.jar",
+      "requestType": "com.flipkart.locusmodels.type.request.ServiceabilityRequest",
+      "responseType": "com.flipkart.locusmodels.type.response.ServiceabilityResponse"
+    }
+  ]
+}

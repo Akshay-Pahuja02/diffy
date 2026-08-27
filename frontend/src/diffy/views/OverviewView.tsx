@@ -117,6 +117,14 @@ export function OverviewView({
           <Stat label="Total requests" value={run.totalReqs.toLocaleString()} sub={`${run.duration} elapsed`} />
         </div>
         <div className="diffy-card diffy-stat-card">
+          <Stat 
+            label="Requests with diffs" 
+            value={run.realDiffs.toLocaleString()} 
+            sub={`${((run.realDiffs / Math.max(1, run.totalReqs)) * 100).toFixed(2)}% of total`}
+            accent={run.realDiffs > 0 ? 'var(--bad)' : 'var(--ok)'}
+          />
+        </div>
+        <div className="diffy-card diffy-stat-card">
           <Stat
             label="Real diff rate"
             value={`${run.diffRate.toFixed(2)}%`}

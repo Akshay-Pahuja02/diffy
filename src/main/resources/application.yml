@@ -37,6 +37,19 @@ de:
     mongodb:
       embedded:
         version: "7.0.14"
+
+listComparisonMode: LEGACY
+
+# Auto-delete Mongo docs after N days (TTL). Set days to 0 to disable.
+# include-config: also expire noise rules + transformation scripts (off by default).
+diffy:
+  retention:
+    days: 1
+    include-config: true
+
+# Proto URI mappings (optional). Set proto.config to enable proto decode in UI + comparison.
+# proto.config: schemas/proto-config.json
+
 management:
   endpoints:
     web:
