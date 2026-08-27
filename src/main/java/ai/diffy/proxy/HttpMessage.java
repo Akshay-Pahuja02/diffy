@@ -68,11 +68,9 @@ public abstract class HttpMessage {
 
     public static HttpHeaders toHttpHeaders(Map<String, String> entries) {
         HttpHeaders result = EmptyHttpHeaders.INSTANCE.copy();
-        entries.forEach((key, values) ->
-            Arrays.stream(values.split(",")).forEach(value ->
-                result.add(key, value.trim())
-            )
-        );
+        // Values are stored as a single string per header (see group()); splitting on "," here
+        // would corrupt any header whose value legitimately contains a comma (e.g. a JSON blob).
+        entries.forEach(result::add);
         return result;
     }
     @Override
