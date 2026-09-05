@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Icons } from '../Icons';
 import { cx, Tag } from '../primitives';
 import {
@@ -32,6 +32,9 @@ export function NoiseView({
   endpoint?: string;
   dateRange: { start: number; end: number };
 }) {
+  const [showAddRule, setShowAddRule] = useState(false);
+  const [newRulePrefix, setNewRulePrefix] = useState('');
+  
   const epRes = useFetchEndpointsQuery({
     excludeNoise: false,
     start: dateRange.start,
@@ -74,6 +77,17 @@ export function NoiseView({
       fieldPrefix: encodeURIComponent(s.field),
       isNoise: true,
     });
+  };
+
+  const handleAddRule = async () => {
+    if (!target || !newRulePrefix.trim()) return;
+    await postNoise({
+      endpoint: encodeURIComponent(target),
+      fieldPrefix: encodeURIComponent(newRulePrefix.trim()),
+      isNoise: true,
+    });
+    setNewRulePrefix('');
+    setShowAddRule(false);
   };
 
   return (
@@ -159,10 +173,33 @@ export function NoiseView({
               {target ? ` for ${target}` : ''}
             </div>
           </div>
-          <button className="diffy-btn is-ghost is-sm">
+          <button className="diffy-btn is-ghost is-sm" onClick={() => setShowAddRule(!showAddRule)}>
             <Icons.Plus size={12} /> Add rule
           </button>
         </div>
+        {showAddRule && (
+          <div style={{ padding: '0 18px 12px', display: 'flex', gap: 8 }}>
+            <input
+              type="text"
+              className="diffy-input"
+              placeholder="e.g. response.sla or response.deliveryPromise"
+              value={newRulePrefix}
+              onChange={(e) => setNewRulePrefix(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleAddRule();
+                if (e.key === 'Escape') setShowAddRule(false);
+              }}
+              style={{ flex: 1, padding: '6px 10px', fontSize: 13 }}
+              autoFocus
+            />
+            <button className="diffy-btn is-primary is-sm" onClick={handleAddRule} disabled={!newRulePrefix.trim()}>
+              Add
+            </button>
+            <button className="diffy-btn is-ghost is-sm" onClick={() => setShowAddRule(false)}>
+              Cancel
+            </button>
+          </div>
+        )}
         <div className="diffy-table">
           <div className="diffy-table-head">
             <div style={{ flex: 1.4 }}>Field prefix</div>

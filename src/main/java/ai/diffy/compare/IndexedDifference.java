@@ -8,8 +8,11 @@ public record IndexedDifference(List<Difference> indexedDiffs) implements SeqDif
     @Override
     public Map<String, Difference> flattened() {
         Map<String, Difference> result = new LinkedHashMap<>();
-        for (Difference d : indexedDiffs) {
-            result.putAll(d.flattened());
+        for (int i = 0; i < indexedDiffs.size(); i++) {
+            String prefix = i + ".";
+            for (Map.Entry<String, Difference> e : indexedDiffs.get(i).flattened().entrySet()) {
+                result.put(prefix + e.getKey(), e.getValue());
+            }
         }
         return result;
     }

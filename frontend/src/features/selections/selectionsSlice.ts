@@ -22,12 +22,13 @@ interface Selections {
 const initialState: Selections = {
   runId: 'current',
   view: 'overview',
-  noiseCancellationIsOn: false,
+  noiseCancellationIsOn: true,
   endpointName: undefined,
   fieldPrefix: undefined,
   inspectorDiff: undefined,
   search: '',
-  dateTimeRange: { start: Date.now() - 5 * 60 * 1000, end: Date.now() },
+  // Match chart window; API default end=1701001001000 truncates older data if start is too recent
+  dateTimeRange: { start: 0, end: 9_999_999_999_999 },
 };
 
 const slice = createSlice({

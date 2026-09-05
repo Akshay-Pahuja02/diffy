@@ -25,6 +25,15 @@ public class HttpRequest extends HttpMessage {
         this.routingMode = TransformationEdge.valueOf(routingMode);
     }
 
+    public HttpRequest(String method, String uri, String path, Map<String, String> params, HttpHeaders headers, byte[] body, String routingMode) {
+        super(headers, body);
+        this.method = method;
+        this.uri = uri;
+        this.path = path;
+        this.params = params;
+        this.routingMode = TransformationEdge.valueOf(routingMode);
+    }
+
     public String getMethod() {
         return method;
     }

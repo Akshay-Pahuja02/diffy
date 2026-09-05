@@ -1,7 +1,7 @@
 import { Metric } from '../../features/fields/Metric';
 
 // Backend metric leaves have these numeric keys (and may add `name`/`weight` when include_weights=true).
-const METRIC_KEYS = ['differences', 'noise', 'relative_difference', 'absolute_difference'];
+const METRIC_KEYS = ['differences', 'noise', 'signal', 'relative_difference', 'absolute_difference'];
 
 function isMetricLeaf(v: any): v is Metric {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
@@ -33,19 +33,16 @@ export interface FieldTreeNode {
   children?: FieldTreeNode[];
 }
 
-const NOISE_HINTS = ['date', 'time', 'request-id', 'requestid', 'x-request', 'last_seen', 'timestamp'];
-
-function isLikelyNoise(path: string, metric?: Metric): boolean {
-  const lower = path.toLowerCase();
-  if (NOISE_HINTS.some((h) => lower.includes(h))) return true;
-  if (metric && metric.noise > 0 && metric.differences <= metric.noise * 1.2) return true;
-  return false;
-}
-
 interface BuildEntry {
   path: string;
   type: string;
   metric: Metric;
+}
+
+function displayCount(metric: Metric): number {
+  if (typeof metric.signal === 'number' && metric.signal > 0) return metric.signal;
+  if (typeof metric.differences === 'number' && metric.differences > 0) return metric.differences;
+  return 0;
 }
 
 // The backend returns either:
@@ -64,8 +61,11 @@ function normalize(fields: Record<string, any>): BuildEntry[] {
         if (isMetricLeaf(v)) {
           const fullKey = prefix ? `${prefix}.${k}` : k;
           const realPath = stripTypeMarker(fullKey);
+          if (realPath.startsWith('request.')) continue;
           const type = extractTypeMarker(fullKey).replace(/Difference$/i, '').toLowerCase() || 'leaf';
-          out.push({ path: realPath, type, metric: v });
+          const count = displayCount(v as Metric);
+          if (count <= 0) continue;
+          out.push({ path: realPath, type, metric: v as Metric });
         } else {
           visit(v, prefix ? `${prefix}.${k}` : k);
         }
@@ -95,30 +95,34 @@ function assemble(entries: BuildEntry[]): FieldTreeNode[] {
   for (const e of entries) {
     const parts = e.path.split('.');
     const leaf = getOrCreate(parts);
+    const count = displayCount(e.metric);
     leaf.node = {
       path: e.path,
       name: parts[parts.length - 1] || e.path,
-      count: e.metric.differences || 0,
+      count,
       type: e.type,
-      suspectNoise: isLikelyNoise(e.path, e.metric),
-      hot: (e.metric.differences || 0) > 10,
+      hot: count > 10,
     };
   }
 
-  function finalize(holder: any): FieldTreeNode {
-    const children = Array.from(holder.children.values()).map(finalize);
+  function finalize(holder: any): FieldTreeNode | null {
+    const children = Array.from(holder.children.values())
+      .map(finalize)
+      .filter((n): n is FieldTreeNode => n != null);
     const node: FieldTreeNode = holder.node || { path: '', name: '', count: 0, type: 'object' };
     if (children.length) {
       node.children = children;
-      node.count = node.count || children.reduce((s: number, c: FieldTreeNode) => s + c.count, 0);
-      node.suspectNoise = node.suspectNoise || isLikelyNoise(node.path);
+      node.count = Math.max(...children.map((c) => c.count), 0);
       node.hot = node.hot || node.count > 10;
       node.type = node.type === 'object' ? 'object' : node.type;
     }
+    if (node.count <= 0 && !children.length) return null;
     return node;
   }
 
-  return Array.from(root.children.values()).map(finalize);
+  return Array.from(root.children.values())
+    .map(finalize)
+    .filter((n): n is FieldTreeNode => n != null);
 }
 
 export function buildFieldTree(fields: Record<string, any> | undefined): FieldTreeNode[] {
@@ -137,10 +141,9 @@ export function maxFieldCount(nodes: FieldTreeNode[]): number {
   return m || 1;
 }
 
+/** @deprecated Backend exclude_noise handles P vs S filtering; kept for empty fallback. */
 export function hideNoise(nodes: FieldTreeNode[]): FieldTreeNode[] {
-  return nodes
-    .filter((n) => !n.suspectNoise)
-    .map((n) => (n.children ? { ...n, children: hideNoise(n.children) } : n));
+  return nodes;
 }
 
 export interface FlatNode extends FieldTreeNode {

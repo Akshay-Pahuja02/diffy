@@ -113,8 +113,8 @@ export const apiRunsSlice = createApi({
           const totalDiffs = Object.values(allEps).reduce((s, e) => s + (e.differences || 0), 0);
           const noiseDiffs = Math.max(0, totalDiffs - realDiffs);
 
-          const run = synthesizeRun(info, cleanEps, noiseDiffs);
-          // Override realDiffs with the noise-excluded total
+          // Total counts from all endpoints; realDiffs from noise-filtered subset
+          const run = synthesizeRun(info, allEps, noiseDiffs);
           run.realDiffs = realDiffs;
           return { data: [run] };
         },

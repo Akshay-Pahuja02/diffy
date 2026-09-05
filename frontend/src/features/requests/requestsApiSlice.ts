@@ -10,7 +10,7 @@ export const apiRequestsSlice = createApi({
         return {
             fetchRequest: builder.query<Request, string>({
                 query(requestId){
-                    return `/requests/${requestId}`;
+                    return `/requests/${requestId}?include_request=true`;
                 }
             })
         }

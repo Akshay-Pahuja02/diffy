@@ -39,6 +39,7 @@ public class Renderer {
         if (includeRequestResponses) {
             m.put("request", JsonLifter.decode(dr.request));
             m.put("left",    JsonLifter.decode(dr.responses.primary));
+            m.put("secondary", JsonLifter.decode(dr.responses.secondary));
             m.put("right",   JsonLifter.decode(dr.responses.candidate));
         }
         return m;
@@ -70,8 +71,12 @@ public class Renderer {
 
     public static Map<String, Object> field(JoinedField field, boolean includeWeight) {
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("differences",         field.raw().differences());
-        m.put("noise",               field.noise().differences());
+        int raw = field.raw().differences();
+        int noiseCount = field.noise().differences();
+        int signal = Math.max(0, raw - noiseCount);
+        m.put("differences", raw);
+        m.put("noise",       noiseCount);
+        m.put("signal",      signal);
         m.put("relative_difference", field.relativeDifference());
         m.put("absolute_difference", field.absoluteDifference());
         if (includeWeight) m.put("weight", field.raw().weight());
