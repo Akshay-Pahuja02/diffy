@@ -46,7 +46,8 @@ public class ProtoConfigService {
         Method responseParseFrom,
         Method requestParseFrom,
         Class<?> responseClass,
-        Descriptors.Descriptor googleDescriptor
+        Descriptors.Descriptor responseGoogleDescriptor,
+        Descriptors.Descriptor requestGoogleDescriptor
     ) {}
 
     public ProtoConfigService(Settings settings) {
@@ -87,10 +88,15 @@ public class ProtoConfigService {
         Method responseParseFrom = responseClass.getMethod("parseFrom", byte[].class);
 
         Method requestParseFrom = null;
+        Descriptors.Descriptor requestGoogleDescriptor = null;
         if (mapping.getRequestType() != null && !mapping.getRequestType().isBlank()) {
             try {
                 Class<?> requestClass = classLoader.loadClass(mapping.getRequestType());
                 requestParseFrom = requestClass.getMethod("parseFrom", byte[].class);
+                if (!Message.class.isAssignableFrom(requestClass)) {
+                    requestGoogleDescriptor = buildGoogleDescriptor(requestClass);
+                    log.info("Resolved shaded protobuf descriptor for request {}", mapping.getRequestType());
+                }
             } catch (Exception e) {
                 log.warn(
                     "Could not load requestType {} for URI {} from {} — request proto decode disabled for this mapping",
@@ -98,13 +104,19 @@ public class ProtoConfigService {
             }
         }
 
-        Descriptors.Descriptor googleDescriptor = null;
+        Descriptors.Descriptor responseGoogleDescriptor = null;
         if (!Message.class.isAssignableFrom(responseClass)) {
-            googleDescriptor = buildGoogleDescriptor(responseClass);
+            responseGoogleDescriptor = buildGoogleDescriptor(responseClass);
             log.info("Resolved shaded protobuf descriptor for {}", mapping.getResponseType());
         }
 
-        return new ResolvedMapping(responseParseFrom, requestParseFrom, responseClass, googleDescriptor);
+        return new ResolvedMapping(
+            responseParseFrom,
+            requestParseFrom,
+            responseClass,
+            responseGoogleDescriptor,
+            requestGoogleDescriptor
+        );
     }
 
     private File resolveJarFile(String location) throws IOException {
@@ -328,9 +340,12 @@ public class ProtoConfigService {
                 return jsonPrinter.print(googleMessage);
             }
 
-            if (mapping.googleDescriptor() != null) {
+            Descriptors.Descriptor shadedDescriptor = "request".equals(direction)
+                ? mapping.requestGoogleDescriptor()
+                : mapping.responseGoogleDescriptor();
+            if (shadedDescriptor != null) {
                 byte[] wire = (byte[]) parsed.getClass().getMethod("toByteArray").invoke(parsed);
-                DynamicMessage dynamicMessage = DynamicMessage.parseFrom(mapping.googleDescriptor(), wire);
+                DynamicMessage dynamicMessage = DynamicMessage.parseFrom(shadedDescriptor, wire);
                 return jsonPrinter.print(dynamicMessage);
             }
 
